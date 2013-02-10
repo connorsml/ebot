@@ -57,7 +57,8 @@ create_doc(Url) ->
 			   {<<"ebot_links_count">>, 0},
 			   {<<"ebot_referrals">>, []},
 			   {<<"ebot_visits_count">>, 0},
-			   {<<"http_returncode">>,0}
+			   {<<"http_returncode">>,0},
+			   {<<"url">>, ebot_util:safe_list_to_binary(Url)}
 			 ]),
     {ok, Doc}.
 
@@ -87,17 +88,22 @@ update_doc(Doc, Unknown) ->
 %%--------------------------------------------------------------------
 
 update_url_head_doc(Doc, Headers, Header_keys ) ->	    
+    % error_logger:info_report({?MODULE, ?LINE, {update_url_head_doc, Doc}}),
+    {_, Headers1, _} = Headers, % custom
     Doc2 = lists:foldl(
 	     fun(BKey, Document) ->
+	     	 % error_logger:info_report({?MODULE, ?LINE, {update_url_head_doc, BKey, Headers}}),
 		     Value = proplists:get_value(
 			       binary_to_list(BKey),
-			       Headers,
+			       Headers1,
 			       ""),
 		     %% couchdb doesn't like - characters, so we convert it to _
-		     NewBKey = list_to_binary(re:replace(binary_to_list(BKey), "-", "_", [global, {return,list}])),
-		     error_logger:info_report({?MODULE, ?LINE, {update_url_head_doc, NewBKey, Value}}),
+		     NewBKey = list_to_binary("header_" ++ re:replace(binary_to_list(BKey), "-", "_", [global, {return,list}])),
+		     % error_logger:info_report({?MODULE, ?LINE, {update_url_head_doc, NewBKey, Value, Document}}),
 		     BValue = ebot_util:safe_list_to_binary(Value),
-		     ebot_db_doc:update_doc(Document, [{update_value, NewBKey, BValue}])
+		     % bug! ebot_db_doc:update_doc(Document, [{update_value, NewBKey, BValue}]) 
+		     {ok, NewDoc} = ebot_db_doc:update_doc(Document, [{update_value, NewBKey, BValue}]),
+		     NewDoc
 	     end,
 	     Doc,
 	     Header_keys

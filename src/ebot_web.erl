@@ -28,10 +28,16 @@
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 5000).
 -define(WORKER_TYPE, web).
+-define(WORKERS_REANIMATOR_TIMEOUT, 1000 * 60 * 2).
+
+-behaviour(gen_server).
 
 -include("ebot.hrl").
 
--behaviour(gen_server).
+-record(state,{
+	  workers
+	 }).
+
 
 %% API
 -export([
@@ -43,16 +49,13 @@
 	 start_workers/0,
 	 start_workers/2,
 	 start_link/0,
-	 statistics/0
+	 statistics/0,
+   reanimator_thread/0
 	]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
-
--record(state,{
-	  workers = ebot_worker_util:create_workers(?WORKER_TYPE)
-	 }).
 
 %%====================================================================
 %% API
@@ -68,7 +71,7 @@ check_recover_workers() ->
 info() ->
     gen_server:call(?MODULE, {info}).
 get_workers() ->
-    gen_server:call(?MODULE, {get_workers}).
+    gen_server:call(?MODULE, {get_workers}, infinity).
 start_workers() ->
     gen_server:cast(?MODULE, {start_workers}).
 start_workers(Depth, Tot) ->
@@ -90,14 +93,18 @@ remove_worker(Worker) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([]) ->
-    {ok, Options} = ebot_util:get_env(web_request_options),
-    httpc:set_options(Options),
-    case ebot_util:get_env(start_workers_at_boot) of
-	{ok, true} ->
-	    State = start_workers(#state{});
-	{ok, false} ->
-	    State = #state{}
-    end,
+  start_workers_reanimator(),
+  {ok, Options} = ebot_util:get_env(web_request_options),
+  httpc:set_options(Options),
+	{ok, WStrategy} = lookup_workers_strategy(),
+	Workers = WStrategy:create_workers(?WORKER_TYPE),
+    State = case ebot_util:get_env(start_workers_at_boot) of
+		{ok, true} ->
+		    #state{workers = WStrategy:start_workers(Workers)};
+		{ok, false} ->
+		    #state{}
+		end,
+	
     {ok, State}.
 
 %%--------------------------------------------------------------------
@@ -127,9 +134,11 @@ handle_call({get_workers}, _From, State) ->
     {?WORKER_TYPE, Reply} = State#state.workers,
     {reply, Reply, State};
 
-handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+
+handle_call(Request, _From, State) ->
+  % Strategy may know how to handle Msg.
+  {Result, NewState} = try_strategy_call(Request, State),
+  {reply, Result, NewState}.
 
 %%--------------------------------------------------------------------
 %% Function: handle_cast(Msg, State) -> {noreply, State} |
@@ -138,9 +147,9 @@ handle_call(_Request, _From, State) ->
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
 handle_cast({remove_worker, Worker}, State) ->
+	{ok, WStrategy} = lookup_workers_strategy(),
     NewState = State#state{
-		 workers = ebot_worker_util:remove_worker(Worker, 
-							  State#state.workers)
+		 workers = WStrategy:remove_worker(Worker, State#state.workers)
 		},
     {noreply, NewState};
 
@@ -149,14 +158,17 @@ handle_cast({start_workers}, State) ->
     {noreply, NewState};
 
 handle_cast({start_workers, Depth, Tot}, State) ->
+    {ok, WStrategy} = lookup_workers_strategy(),
     NewState = State#state{
-		 workers = ebot_worker_util:start_workers(Depth,Tot, 
-							  State#state.workers)
+		 workers = WStrategy:start_workers(Depth, Tot, State#state.workers)
 		},
     {noreply, NewState};
 
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+handle_cast(Msg, State) ->
+	 % error_logger:info_report({?MODULE, ?LINE, {handle_cast, Msg}}),
+    % Strategy may know how to handle Msg.
+    {noreply, try_strategy_cast(Msg, State)}.
+
 
 %%--------------------------------------------------------------------
 %% Function: handle_info(Info, State) -> {noreply, State} |
@@ -164,7 +176,15 @@ handle_cast(_Msg, State) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info(_Info, State) ->
+
+handle_info({'EXIT', From, Reason}, State) when Reason =/= normal ->
+  error_logger:info_report({?MODULE, ?LINE, {exit_signal_received_from, From, with, Reason}}),
+  {ok, WStrategy} = lookup_workers_strategy(),
+  NewState = State#state{workers = WStrategy:restart_worker(From, State#state.workers) },
+  {noreply, NewState};
+
+handle_info(Info, State) ->
+    error_logger:info_report({?MODULE, ?LINE, {info, Info}}),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -184,37 +204,49 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-run(Depth) ->
-    case ebot_mq:receive_url_new(Depth) of
-	{ok, {Url, _}} ->
-	    ebot_crawler:add_visited_url(Url),
-	    Result = ebot_web_util:fetch_url_with_only_html_body(Url),
-	    ebot_mq:send_url_fetched({Url,Result});
-	{error, _Reason} ->
-	    error_logger:info_report({?MODULE, ?LINE, {run, no_queued_urls, waiting}}),
-	    timer:sleep( ?EBOT_EMPTY_QUEUE_TIMEOUT )
-    end,
-    case ebot_crawler:workers_status() of
-	started ->
-	    {ok, Sleep} = ebot_util:get_env(workers_sleep_time),
-	    timer:sleep( Sleep ),
-	    run(Depth);
-	stopped ->
-	    error_logger:warning_report({?MODULE, ?LINE, {stopping_worker, self()}}),
-	    remove_worker( {Depth, self()} )
-    end.
-
+run(Params) ->
+	{ok, WStrategy} = lookup_workers_strategy(),
+	WStrategy:run(Params).
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-
 start_workers(State) ->
-    {ok, Pool} = ebot_util:get_env(workers_pool),
-    State#state{
-      workers = ebot_worker_util:start_workers(Pool, 
-					       State#state.workers)
-     }.
+    {ok, WStrategy} = lookup_workers_strategy(),
+	State#state{
+      workers = WStrategy:start_workers(State#state.workers)
+   	}.
+
+
+lookup_workers_strategy() ->
+	ebot_util:get_env(ebot_web_mgmt_strategy).
+
+
+try_strategy_cast(Request, State) ->
+  	{ok, WStrategy} = lookup_workers_strategy(),
+  	case catch(WStrategy:strategy_cast(Request, State)) of
+       {'EXIT', {undef, _ }} -> State;
+       Else -> Else
+    end.
+
+try_strategy_call(Request, State) ->
+    {ok, WStrategy} = lookup_workers_strategy(),
+    case catch(WStrategy:strategy_call(Request, State)) of
+       {'EXIT', {undef, _ }} -> {ok, State};
+       Else -> Else
+    end.
+
+
+start_workers_reanimator() ->
+  process_flag(trap_exit, true),
+  spawn(?MODULE, reanimator_thread, []).
+  
+
+reanimator_thread() ->
+  timer:sleep(?WORKERS_REANIMATOR_TIMEOUT),
+  gen_server:cast(ebot_web, {reanimate_workers}),
+  reanimator_thread().
+
 
 %%====================================================================
 %% EUNIT TESTS

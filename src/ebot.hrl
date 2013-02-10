@@ -24,8 +24,10 @@
 %% -----------------------------------------------------------------------
 %% DB
 %% -----------------------------------------------------------------------
-%-define(EBOT_DB_BACKEND, ebot_db_backend_couchdb).
--define(EBOT_DB_BACKEND, ebot_db_backend_riak_pb).
+% -define(EBOT_DB_BACKEND, ebot_db_backend_couchdb).
+% -define(EBOT_DB_BACKEND, ebot_db_backend_riak_pb).
+-define(EBOT_DB_BACKEND, ebot_db_backend_postgresql).
+% -define(EBOT_DB_BACKEND, ebot_db_backend_mongo).
 
 %% -----------------------------------------------------------------------
 %% WEB
@@ -35,12 +37,13 @@
 -define(EBOT_BODY_ANALYZER_PLUGINS, [
 				     %% for saving TITLE, ...
 				     {ebot_html_analyzer_header,add_header_tags},
-				     {ebot_html_analyzer_images, add_images_list}
-				     %,{ebot_html_analyzer_sample,analyze_url_body}
+				     % {ebot_html_analyzer_images, add_images_list},
+				     % {ebot_html_analyzer_sample,analyze_url_body},
+				     {ebot_html_analyzer_md5_calculator, analyze}
 				    ]).
 
 %% -----------------------------------------------------------------------
 %% WORKERS
 %% -----------------------------------------------------------------------
 -define(EBOT_WORKER_TYPES, [html, web]).
--define(EBOT_EMPTY_QUEUE_TIMEOUT, 10000).
+-define(EBOT_EMPTY_QUEUE_TIMEOUT, 2000).

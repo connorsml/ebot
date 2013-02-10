@@ -32,7 +32,9 @@
 	 get_images_from_tokens/2,
 	 get_start_tags_attributes/2,
 	 get_start_tags_attributes/3,
-	 get_start_tags_data/2
+	 get_start_tags_data/2,
+	 decode_html_to_utf8/3,
+   try_decode_bad_html_to_utf8/3
 	]).
 
 %%====================================================================
@@ -190,6 +192,198 @@ get_start_tags_data(Tokens, TagName) ->
 		 Indexes),
     lists:flatten(DeepList).
 
+
+% uniconvert(String) ->
+%   try xmerl_ucs:from_utf8(String) of
+%     _ ->
+%       list_to_binary(String)
+%   catch
+%     exit:{ucs,{bad_utf8_character_code}} ->
+%       list_to_binary(xmerl_ucs:to_utf8(String))
+%   end.
+
+%%====================================================================
+%% Internal encoding-related functions.
+%% Use https://github.com/Vagabond/erlang-iconv.
+%%====================================================================
+
+%%====================================================================
+%% Converts Content into utf-8 according to the meta containing either
+%% in <meta> tag or in the header. If not found, the Content is assumed
+%% to be in utf-8 and all other symbols are thrown out off it.
+%%====================================================================
+convert_to_utf8_with_enconv(Bin) ->
+  os:cmd("echo \"" ++ escape_quotes(Bin) ++ "\" | enconv -L ru -x utf8").
+
+convert_to_utf8_with_iconv(FromEnc, Data) ->
+  os:cmd("echo \"" ++ escape_quotes(Data) ++ "\" | iconv -f " ++ FromEnc ++ " -t utf8").
+
+check_if_utf8(Html) ->
+  Converted = os:cmd("echo \"" ++ escape_quotes(Html) ++ "\" | iconv -f utf8 -t utf8"),
+  % case binary:match(Converted, <<"iconv: illegal input sequence at position">>) of
+  %   nomatch -> true;
+  %   _ -> false
+  % end.
+  Res = case re:run(Converted, "iconv: illegal input sequence at position", [global, {capture, none,list}]) of
+    match -> false;
+    _ -> true
+  end,
+  % error_logger:info_report({?MODULE, ?LINE, check_if_utf8, data, Html, result, Res}),
+  Res.
+
+decode_html_to_utf8(_Url, Data, _Headers) ->
+  convert_to_utf8_with_enconv(Data).
+
+try_decode_bad_html_to_utf8(Url, Data, Headers) ->
+  % META tag has the highest priority.
+  Converted = case extract_encoding_from_meta(Data) of
+    {ok, Enc} -> 
+                Data1 = convert_to_utf8_with_iconv(Enc, Data),
+                case check_if_utf8(Data1) of
+                   true -> 
+                      error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, using_iconv, enc, Enc}),
+                      {ok, Data1};
+                   false -> {error, empty}
+                end;
+
+    {error, not_found} -> 
+        error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, no_encoding_from_meta}),
+        {error, empty}
+  end,
+
+  Converted1 = case Converted of 
+    {ok, Data2} -> {ok, Data2};
+
+    {error, empty} -> 
+
+       case extract_encoding_from_headers(Headers) of
+
+         {ok, Enc1} ->
+                Data2 = convert_to_utf8_with_iconv(Enc1, Data),
+                case check_if_utf8(Data2) of
+                   true -> 
+                      error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, using_iconv, enc, Enc1}),
+                      {ok, Data2};
+                   false -> 
+                      Data3 = convert_to_utf8_with_enconv(Data),
+                      case check_if_utf8(Data3) of
+                        true -> 
+                            error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, using_enconv, 1}),
+                            {ok, Data3};
+                        false -> 
+                           error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, retaining_ascii, 1}),
+                           {ok, retain_ascii(binary_to_list(Data)) }
+                      end
+
+                end;
+
+          {error, not_found} -> 
+                Data4 = convert_to_utf8_with_enconv(Data),
+                case check_if_utf8(Data4) of
+                  true -> 
+                     error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, using_enconv, 2}),
+                     {ok, Data4};
+                  false -> 
+                      Data6 = retain_ascii(binary_to_list(Data)),
+                      case check_if_utf8(Data6) of
+                        true -> 
+                            error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, retaining_ascii, 2}),
+                            {ok, Data6};
+                        false -> {error, not_converted}
+                      end
+                end
+       end
+  end,
+
+  case Converted1 of
+    {ok, Data5} -> 
+         % error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, data, Data, headers, Headers, result, Data7}),
+         {ok, ebot_util:safe_list_to_binary(Data5)};
+
+    Else -> 
+        error_logger:info_report({?MODULE, ?LINE, decode_html_to_utf8, url, Url, empty_result}),
+        Else
+  end.
+
+
+retain_ascii(Str) -> 
+  retain_utf8(Str).
+
+
+extract_encoding_from_content_type(CType) ->
+   case re:run(CType, "charset=([a-zA-z0-9-]+)", [{capture, [1], list}, caseless]) of
+   	 {match, [Enc]} -> {ok, Enc};
+   	 nomatch -> {error, not_found}
+   end.
+
+extract_encoding_from_headers(Headers) ->
+   error_logger:warning_report({?MODULE, ?LINE, {extract_encoding_from_headers, Headers}}),  
+   case lists:filter(fun({Name, _}) -> Name == "content-type" end, Headers) of
+      [] -> {error, not_found};
+      [{_, Enc}] -> extract_encoding_from_content_type(Enc)
+   end.
+
+
+extract_encoding_from_meta(Body) ->
+  Body1 = ebot_util:safe_binary_to_list(Body),
+  case re:run(Body1, "<meta\.+charset=([a-zA-z0-9-]+)", [dotall, {capture, [1], list}, caseless]) of
+    {match, [Enc]} -> {ok, Enc};
+    nomatch -> {error, not_found}
+  end.
+
+escape_quotes(Data) when is_binary(Data) ->
+  Data1 = binary:replace(Data, <<"\"">>, <<"\\\"">>, [global]),
+  Data2 = binary:replace(Data1, <<"$">>, <<"\\$">>, [global]),
+  binary_to_list(Data2);
+
+escape_quotes(Data) when is_list(Data) ->
+  Data1 = re:replace(Data, "\"", "\\\"", [global, {return,list}]),
+  re:replace(Data1, "$", "\\$", [global, {return,list}]).
+
+
+% extract_encoding_from_meta(Tokens) -> 
+%   case get_start_tags_attributes(Tokens, <<"meta">>) of
+%    	[Meta] ->
+% 	   Meta1 = lists:flatten(Meta),
+% 	   Meta2 = lists:foldl(fun({Header, Content}, Acc) ->
+% 	   	                     if 
+% 		   	                    Header == <<"content">> ->
+% 									case extract_encoding(ebot_util:safe_binary_to_list(Content)) of 
+% 										{ok, Enc} -> [Enc | Acc];
+% 										{error, not_found} -> Acc
+% 									end;
+								
+% 								true -> Acc
+% 							  end
+% 							end,
+% 							[],
+% 				            Meta1),
+	   
+% 	   case Meta2 of
+% 	   	  [Enc] -> {ok, Enc};
+% 	   	  _ ->
+% 			  {error, not_found}
+% 	   end;
+
+% 	_ -> 
+% 	  {error, not_found}
+%   end.
+
+retain_utf8(String) ->
+  retain_encoding(String, 'utf-8').
+
+retain_encoding(String, Enc) ->
+  String1 = lists:foldl(fun(Sym, Acc) ->
+    try xmerl_ucs:is_incharset(Sym, Enc) of
+      true -> [Sym | Acc];
+      _ -> Acc
+    catch
+       exit:{ucs, {bad_utf8_character_code}} -> Acc
+    end
+  end,
+  [],
+  ebot_util:safe_binary_to_list(String)),
+  list_to_binary(lists:reverse(String1)).
 
 %%====================================================================
 %% EUNIT TESTS

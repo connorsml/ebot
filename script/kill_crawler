@@ -1,0 +1,3 @@
+#!/bin/bash
+
+ps ax | grep mo_crawler | grep erlang | ruby -e 'STDIN.read.split("\n").map(&:strip).collect {|s| s.scan(/^(\d+)/)}.flatten.each {|pid| `sudo kill -9 #{pid}`}'

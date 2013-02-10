@@ -86,5 +86,3 @@ statistics(Db) ->
 save_doc(Db, Doc) ->
     {ok, {Doc1}} = couchbeam:save_doc(Db, {dict:to_list(Doc)}),
     {ok, dict:from_list(Doc1)}.
-
-

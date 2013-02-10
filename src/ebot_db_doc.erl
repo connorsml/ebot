@@ -80,8 +80,16 @@ get_doctype(Doc) ->
 update_doc(Doc, [{update_counter, Key}|Options]) ->
     {ok, NewDoc} = update_doc_increase_counter(Doc, Key),
     update_doc(NewDoc, Options);
+
+update_doc(Doc, [{set_counter, Key, Value}|Options]) ->
+    {ok, NewDoc} = update_doc_by_key_value(Doc, Key, Value),
+    update_doc(NewDoc, Options);
+
 update_doc(Doc, [{update_timestamp, Key}|Options]) ->
     {ok, NewDoc} = update_doc_timestamp_by_key(Doc, Key),
+    update_doc(NewDoc, Options);
+update_doc(Doc, [{update_timestamp_msec, Key}|Options]) ->
+    {ok, NewDoc} = update_doc_timestamp_with_microsec_by_key(Doc, Key),
     update_doc(NewDoc, Options);
 update_doc(Doc, [{update_value, Key, Value}|Options]) ->
     {ok, NewDoc} = update_doc_by_key_value(Doc, Key, Value),
@@ -136,18 +144,27 @@ date_field_status(Date, Days) ->
     end.
 
 update_doc_increase_counter(Doc, Key) ->
-    Value = doc_get_value(Key, Doc),
-    update_doc_by_key_value(Doc, Key, Value + 1).
+    Value1 = case doc_get_value(Key, Doc) of
+        error ->  0;
+        Value -> Value
+    end,
+    update_doc_by_key_value(Doc, Key, Value1 + 1).
+
 
 update_doc_timestamp_by_key(Doc, Key) ->
-    Value = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+    {Mega, Seconds, _} = erlang:now(),
+    Value = Mega * 1000000 + Seconds, % Linux timestamp
     update_doc_by_key_value(Doc, Key, Value).
 
+update_doc_timestamp_with_microsec_by_key(Doc, Key) ->
+    {Mega, Seconds, McSec} = erlang:now(),
+    Value = Mega * 1000000 + Seconds + McSec/1000000, % Linux timestamp
+    update_doc_by_key_value(Doc, Key, Value).
+
+
 update_doc_by_key_value(Doc, Key, Value) ->
-    %%error_logger:info_report({?MODULE, ?LINE, {update_doc_by_key_value, Key, Value, Doc}}),
     Doc2 = dict:store(Key, Value, Doc),
     {ok, Doc2}.
-
 
 -ifdef(TEST).
 

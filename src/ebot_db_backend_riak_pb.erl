@@ -24,7 +24,7 @@
 %%%-------------------------------------------------------------------
 -module(ebot_db_backend_riak_pb).
 
--define(BUCKET_URLS, <<"ebot">>).
+-define(BUCKET_URLS, <<"pages">>).
 
 %% API
 -export([
@@ -32,7 +32,9 @@
 	 delete_all_docs/1,
 	 list_docs/1,
 	 open_doc/2,
+	 open_doc/3,
 	 save_doc/3,
+	 save_doc/4,
 	 statistics/1
 	]).
 
@@ -47,14 +49,27 @@
 delete_doc(Db, Url) ->
     delete_key(Db, ?BUCKET_URLS, Url).
 
+delete_doc(Db, Bucket, Url) ->
+    delete_key(Db, Bucket, Url).
+
 delete_all_docs(Db) ->
     empty_db_bucket(Db, ?BUCKET_URLS).
+
+delete_all_docs(Db, Bucket) ->
+    empty_db_bucket(Db, Bucket).
 
 list_docs(Db) ->
     list_keys(Db, ?BUCKET_URLS).
 
+list_docs(Db, Bucket) ->
+    list_keys(Db, Bucket).
+
+
 open_doc(Db, Id) ->
-    case riakc_pb_socket:get(Db, ?BUCKET_URLS, Id) of
+  open_doc(Db, Id, ?BUCKET_URLS).
+
+open_doc(Db, Id, Bucket) ->
+    case riakc_pb_socket:get(Db, Bucket, Id) of
 	{error, notfound} ->
 	    {error, not_found};
 	{error, Reason} ->
@@ -86,7 +101,7 @@ delete_key(Db, Bucket, Key) ->
      riakc_pb_socket:delete(Db, Bucket, Key).
 
 empty_db_bucket(Db, Bucket) ->
-    case list_keys(Db, ?BUCKET_URLS) of
+    case list_keys(Db, Bucket) of
 	{ok, Keys} ->
 	    lists:foreach(
 	      fun(K) -> delete_key(Db, Bucket, K) end,

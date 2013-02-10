@@ -40,7 +40,13 @@
 	  remove_duplicates/1,
 	  safe_binary_to_list/1,
 	  safe_list_to_binary/1,
-	  string_replacements_using_regexps/2
+	  string_replacements_using_regexps/2,
+    md5_for/1,
+    atomize/1,
+    repeatable_calls/4,
+    now_as_utc/0,
+    parse_analyze_error/1,
+    content_length/2
 	 ]).
 
 %%====================================================================
@@ -127,3 +133,104 @@ string_replacements_using_regexps(String, RElist) ->
       RElist
      ).
 
+md5_for(Data) ->
+  list_to_binary(lists:flatten([ io_lib:format("~2.16.0b",[N]) || <<N>> <= crypto:md5(Data) ])).
+
+
+atomize(Key) when is_binary(Key) ->
+  list_to_atom(binary_to_list(Key));
+
+atomize(Key) when is_atom(Key) ->
+   Key.
+
+
+repeatable_calls(Mod, Fun, Args, Timeout) ->
+  error_logger:info_report({?MODULE, ?LINE, {repeatable_calls, Mod, Fun, Args, Timeout}}),
+  timer:sleep(Timeout),
+  case apply(Mod, Fun, Args) of 
+    {error, timeout} -> 
+       repeatable_calls(Mod, Fun, Args, Timeout);
+    Else -> 
+      error_logger:info_report({?MODULE, ?LINE, {repeatable_calls_exit, Mod, Fun, Args, Timeout}}),
+      Else
+  end.
+
+now_as_utc() ->
+  {LT, UT} = {calendar:local_time(), calendar:universal_time()},
+  {HSign, HDelta} = case calendar:time_difference(UT, LT) of
+    {0, {Delta,_,_}} -> 
+        {"+", Delta};
+    {-1, {Delta, _, _}} ->
+        {"-", 24 - Delta}
+  end,
+  {{LYear,LMonth,LDay},{LHour,LMin,LSec}} = LT,  
+  lists:flatten(io_lib:format("~4..0b-~2..0b-~2..0b~s~2..0b:~2..0b:~2..0b~s~2..0b:~2..0b",[LYear,LMonth,LDay, "T", LHour,LMin,LSec, HSign, HDelta, 0])).
+
+
+parse_analyze_error(Reason) when is_atom(Reason) ->
+  atom_to_list(Reason);
+
+parse_analyze_error(Reason) when is_tuple(Reason) ->
+  error_tuple_to_string(Reason);
+
+parse_analyze_error(Reason) when is_binary(Reason) ->
+  binary_to_list(Reason).
+
+error_tuple_to_string(Error)  ->
+  E1 = parse_error_tuple(Error),
+  E2 = lists:foldl(
+  fun(E, Acc) ->
+     if 
+       is_atom(E) -> [atom_to_list(E)|Acc];
+       is_integer(E) -> [integer_to_list(E)|Acc];
+       is_binary(E) -> [binary_to_list(E)|Acc];
+       true -> [E | Acc]
+     end
+   end,
+  [],
+  E1
+  ),
+  E3 = lists:reverse(E2),
+  string:join(E3, ",").
+
+parse_error_tuple(Error) when is_tuple(Error) ->
+  parse_error_tuple(tuple_to_list(Error));
+
+parse_error_tuple([Error|Rest]) when is_tuple(Error) ->
+  parse_error_tuple(tuple_to_list(Error)) ++ parse_error_tuple(Rest);
+
+parse_error_tuple([Error|Rest]) when is_binary(Error) ->
+  binary_to_list(Error) ++ parse_error_tuple(Rest);
+
+parse_error_tuple(Error) when is_list(Error) andalso length(Error) == 1 ->
+  Error;
+
+parse_error_tuple([Error|Rest]) when is_list(Error) ->
+  Error1 = lists:foldl(
+      fun(E, Acc) ->
+        [parse_error_tuple(E) | Acc]
+      end,
+      [],
+      Error),
+ Error1 ++ parse_error_tuple(Rest);
+
+parse_error_tuple([Error|Rest]) ->
+  [Error] ++ parse_error_tuple(Rest);
+
+parse_error_tuple([]) ->
+ [].
+
+
+content_length(Content) ->
+  calculate_content_size(Content).
+
+content_length(Content, as_list) ->
+  integer_to_list(calculate_content_size(Content)).
+
+calculate_content_size(Content) ->
+  if 
+    is_list(Content) ->
+      length(Content);
+    is_binary(Content) -> 
+      size(Content)
+end.

@@ -29,6 +29,7 @@
 -export([
 	 convert_to_absolute_url/2,
 	 filter_external_links/2,
+     filter_internal_links/2,
 	 is_external_link/2,
 	 is_same_domain/2,
 	 is_same_main_domain/2,
@@ -41,7 +42,13 @@
 	 url_context/1,
 	 url_depth/1,
 	 url_domain/1,
-	 url_main_domain/1
+	 url_main_domain/1,
+     url_add_final_slash/1,
+     url_remove_final_slash/1,
+     clear_links/1,
+     escape_uri/1,
+     is_site_root/1,
+     add_final_slash_if_site_root/1
 	]).
 
 %%--------------------------------------------------------------------
@@ -69,11 +76,13 @@ convert_to_absolute_url( Url, ParentUrl) ->
 filter_external_links(Url, Links) ->
     lists:filter( fun(L) -> is_external_link(Url, L) end, Links).
 
+filter_internal_links(Url, Links) ->
+    lists:filter( fun(L) -> is_internal_link(Url, L) end, Links).
+
 is_same_domain(Url1, Url2) ->
     url_domain(Url1) == url_domain(Url2).
 
 is_same_main_domain(Url1, Url2) ->
-    %% error_logger:info_report({?MODULE, ?LINE, {is_same_main_domain, Url1, Url2}}),
     url_main_domain(Url1) == url_main_domain(Url2).
 
 is_subdomain(Url1, Url2) ->
@@ -81,7 +90,17 @@ is_subdomain(Url1, Url2) ->
 	url_domain(Url1) =/= url_domain(Url2).
 			  
 is_external_link(Url1, Url2) ->
-    not is_same_domain(Url1, Url2).
+    not is_internal_link(Url1, Url2).
+
+is_internal_link(Url1, Url2) ->
+    is_same_domain(Url1, Url2).
+    % LUrl1 = ebot_util:safe_binary_to_list(Url1), 
+    % LUrl2 = ebot_util:safe_binary_to_list(Url2), 
+    % case re:run(LUrl2, "^" ++ LUrl1, [{capture, none},caseless]) of
+    %     match -> true;
+    %     nomatch -> false
+    % end.
+    
 
 is_valid_image(Url) when is_binary(Url) ->
     is_valid_image(binary_to_list(Url));
@@ -157,22 +176,29 @@ parse_url(Url) when is_binary(Url) ->
 
 parse_url(Url) ->
     case http_uri:parse(Url) of
-	{error, Result} ->
-	    {error, Result};
-	{Protocol,_,Root,Port,Path,Query} -> 
-	    %% TODO: should check protocol/port and not only port
-	    case Port of
-		80 ->
-		    P = "";
-		443 ->
-		    P = "";
-		_Else ->
-		    P = ":" ++ integer_to_list(Port)
-	    end,
-	    Domain = atom_to_list(Protocol) ++ "://" ++ Root ++ P,
-	    {Folder, File} = parse_path(Path),
-	    {Domain,Folder,File,Query}
+    	{error, Result} ->
+    	    {error, Result};
+        % Erlang R15 clause
+        {ok, {Protocol,_,Root,Port,Path,Query}} ->
+            construct_parsed_url(Protocol,Root,Port,Path,Query);
+    	{Protocol,_,Root,Port,Path,Query} -> 
+            construct_parsed_url(Protocol,Root,Port,Path,Query)
     end.
+
+construct_parsed_url(Protocol,Root,Port,Path,Query) ->
+    %% TODO: should check protocol/port and not only port
+    case Port of
+    80 ->
+        P = "";
+    443 ->
+        P = "";
+    _Else ->
+        P = ":" ++ integer_to_list(Port)
+    end,
+    Domain = atom_to_list(Protocol) ++ "://" ++ Root ++ P,
+    {Folder, File} = parse_path(Path),
+    {Domain,Folder,File,Query}.
+
 
 url_context(Url) ->
     {Domain,Folder,_File,_Query} = parse_url(Url),
@@ -184,10 +210,26 @@ url_depth(Url) ->
 
 url_domain(Url) ->
     {Domain,_,_,_} = ebot_url_util:parse_url(Url),
-    Domain.
-   
+    
+    Domain1 = case string:substr(Domain, 1, 7) of
+       "http://" -> 
+           string:substr(Domain, 8);
+       _ -> 
+           Domain
+    end,
+
+    % Domain2 = case string:substr(Domain1, 1, 4) of
+    %    "www." -> 
+    %        string:substr(Domain1, 5);
+    %    _ -> 
+    %        Domain1
+    % end,
+
+    UrlParts = re:split(Domain1,"([//])",[{return,list}]),
+    [Domain2 | _] = UrlParts,
+    Domain2.
+
 url_main_domain(Url) ->
-    %% error_logger:info_report({?MODULE, ?LINE, {url_main_domain, Url, start}}),
     {Domain,_,_,_} = ebot_url_util:parse_url(Url),
     [Protocol, Host] = re:split(Domain, "//", [{return,list}]),
     List = re:split(Host, "[.]", [{return,list}]),
@@ -250,13 +292,23 @@ normalize_path([], {_,_}) ->
     {error, too_many_backs}.
 
 url_add_final_slash(Url) ->
-    case re:run(Url, "^http://.+/") of
+    Url1 = ebot_util:safe_binary_to_list(Url),
+    case re:run(Url1, "^http://.+/") of
 	{match, _} ->
-	    Url;
+	    Url1;
 	nomatch ->
-	    error_logger:info_report({?MODULE, ?LINE, {added_final_slash_to, Url}}),
-	    Url ++ "/"
+	    Url1 ++ "/"
     end.
+
+
+url_remove_final_slash(Url) ->
+    Url1 = ebot_util:safe_binary_to_list(Url),
+    case re:run(Url1, "(.+)/$", [{capture, all_but_first, list}]) of 
+        {match, [WithoutSlash]} -> WithoutSlash;
+        nomatch -> Url1
+    end.
+
+
 url_unparse({Domain,Folder,File,Query}) ->
     Domain ++ Folder ++ File ++ Query.
 
@@ -284,6 +336,44 @@ url_without_queries(Url) ->
     mochiweb_util:urlunsplit({Scheme, Netloc, Path, [],[]}).
 
 
+clear_links(Links) ->
+  lists:foldl(fun(Url, Acc) -> 
+                NoGrids = re:replace(Url, "#(.*)", "", [{return,list}]),
+                [NoGrids|Acc] 
+              end, 
+              [], 
+              Links).  
+
+escape_uri(Url) ->
+    {Scheme, Netloc, Path, Query, Fragment} = mochiweb_util:urlsplit(Url),
+    
+    Parts = lists:foldl(
+        fun(Part, Acc) -> [edoc_lib:escape_uri(Part)| Acc] end,
+        [],
+        string:tokens(Path, "/")),
+    Path1 = "/" ++ string:join(lists:reverse(Parts), "/"),
+
+    QuotelessQ = re:replace(Query, "'", "%27", [global, {return, list}]),
+    QuotelessQ1 = re:replace(QuotelessQ, "\"", "%22", [global, {return, list}]),    
+
+    mochiweb_util:urlunsplit({Scheme, Netloc, Path1, QuotelessQ1, Fragment}).
+
+%%--------------------------------------------------------------------
+%% Internal functions.
+%%--------------------------------------------------------------------
+is_site_root(Url) ->
+  case ebot_url_util:parse_url(Url) of 
+    {_Domain,"/",[],[]} ->
+       true;
+    _ ->
+       false
+  end.
+
+add_final_slash_if_site_root(Url) ->
+  case is_site_root(Url) of
+    true -> url_add_final_slash(Url);
+    false -> Url
+  end.
 
 %%====================================================================
 %% EUNIT TESTS
@@ -293,14 +383,15 @@ url_without_queries(Url) ->
 
 -ifdef(TEST).
 
-ebot_url_test() ->
+ebot_url_util_test() ->
+    HomeDomain = "redaelli.org",
     Domain = "http://www.redaelli.org",
     Home = "http://www.redaelli.org/",
     Utest = "http://www.redaelli.org/matteo/ebot_test/",
     Udir1 = "http://www.redaelli.org/matteo/ebot_test/dir1/",
     Udir11 = "http://www.redaelli.org/matteo/ebot_test/dir1/dir11/",
     Utyre1 = "http://www.tyres-pneus-online.co.uk/car-tyres-FORTUNA/F1000/155,65,R13,73,T.html",
-    [
+
      ?assertEqual(Home, url_add_final_slash(Domain)),
 
      ?assertEqual(Home, convert_to_absolute_url("../../", Utest)),
@@ -314,9 +405,9 @@ ebot_url_test() ->
      ?assertEqual(4, ebot_url_util:url_depth(Udir11)),
      ?assertEqual(2, ebot_url_util:url_depth(Utyre1)),
 
-     ?assertEqual(Domain, url_domain(Home)),
-     ?assertEqual(Domain, url_domain(Utest)),
-     ?assertEqual(Domain, url_domain(Udir1)),
+     ?assertEqual(HomeDomain, url_domain(Home)),
+     ?assertEqual(HomeDomain, url_domain(Utest)),
+     ?assertEqual(HomeDomain, url_domain(Udir1)),
 
      ?assertEqual(Utest, url_using_max_depth(Udir1, 2)),
      ?assertEqual(Utest, url_using_max_depth(Udir11, 2)),
@@ -331,11 +422,18 @@ ebot_url_test() ->
 					  <<"http://www.redaelli.org/">>)),
      ?assertEqual(false, is_external_link( <<"http://www.redaelli.org/matteo/">>,  
 					  <<"http://www.redaelli.org/">>)),
+     ?assertEqual(true, is_internal_link( <<"http://www.redaelli.org/matteo/">>,  
+                      <<"http://www.redaelli.org/">>)),
+     ?assertEqual(true, is_internal_link( <<"http://redaelli.org/matteo/">>,  
+                      <<"http://www.redaelli.org/">>)),
+
 
      ?assertEqual(false, is_same_domain( <<"http://github.com/matteoredaelli/ebot">>,  
 					  <<"http://www.redaelli.org/">>)),
      ?assertEqual(true, is_same_domain( <<"http://www.redaelli.org/matteo/">>,  
 					  <<"http://www.redaelli.org/">>)),
+     ?assertEqual(false, is_same_domain( <<"http://redaelli.org/">>,  
+                      <<"http://www.redaelli.org/">>)),
 
      ?assertEqual( "http://redaelli.org", url_main_domain(<<"http://www.redaelli.org/aa/">>)),
      ?assertEqual( "http://redaelli.org", url_main_domain(<<"http://www.matteo.redaelli.org/aa/a">>)),
@@ -357,7 +455,13 @@ ebot_url_test() ->
      ?assertEqual(false, is_subdomain(<<"http://www.redaelli.org/matteo/blog/">>,  
 				      <<"http://www.redaelli.org/">>)),
      ?assertEqual(false, is_subdomain(<<"http://www.redaelli.org/matteo/">>,  
-				      <<"http://matteoredaelli.wordpress.com/">>))
-    ].
+				      <<"http://matteoredaelli.wordpress.com/">>)),
+
+    test_site_root().
+
+test_site_root() ->
+  ?assertEqual(is_site_root(<<"http://nnov.ru">>), true),
+  ?assertEqual(is_site_root(<<"http://03pc.nnov.ru">>), true),
+  ?assertEqual(is_site_root(<<"http://43pc.03pc.nnov.ru">>), true).
 
 -endif.

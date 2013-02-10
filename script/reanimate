@@ -1,0 +1,4 @@
+ps ax | grep mo_crawler | grep beam | ruby -e '
+pids = STDIN.read.split("\n").map(&:strip).collect {|s| s.scan(/^(\d+)/)}.flatten;
+if pids.empty? then `"#{Dir.pwd}/../start.sh"` end;
+'

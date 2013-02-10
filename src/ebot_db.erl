@@ -59,11 +59,17 @@
 	 delete_doc/1,
 	 delete_all_docs/0,
 	 open_doc/1,
+     open_or_create_url/1,
+     open_url_doc_by_url/1,
 	 open_or_create_crawler/1,
 	 open_or_create_doc/2,
-	 open_or_create_url/1,
 	 update_doc/2,
-	 url_status/2
+	 url_status/2,
+     open_or_create_site/1,
+     save_site_doc/2,
+     open_doc_url_by_content_md5/3,
+     delete_passed_urls/2,
+     mark_urls_as_unindexed/1
 	]).
 
 %% gen_server callbacks
@@ -81,10 +87,6 @@
 -include("ebot.hrl").
 -include("deps/couchbeam/include/couchbeam.hrl").
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
-
 %%====================================================================
 %% API
 %%====================================================================
@@ -95,7 +97,7 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 create_url(ID) ->
-    gen_server:call(?MODULE, {create_doc, ID, url}).
+    gen_server:call(?MODULE, {create_doc, ID, url}, infinity).
 delete_doc(ID) ->
     gen_server:call(?MODULE, {delete_doc, ID}).
 delete_all_docs() ->
@@ -103,19 +105,37 @@ delete_all_docs() ->
 list_docs() ->
     gen_server:call(?MODULE, {list_docs}).
 open_doc(ID) ->
-    gen_server:call(?MODULE, {open_doc, ID}).
+    gen_server:call(?MODULE, {open_doc, ID}, infinity).
 open_or_create_crawler(ID) ->
-    gen_server:call(?MODULE, {open_or_create_doc, ID, crawler}).
-open_or_create_doc(ID, DocType) ->
-    gen_server:call(?MODULE, {open_or_create_doc, ID, DocType}).
+    gen_server:call(?MODULE, {open_or_create_doc, ID, crawler}, infinity).
 open_or_create_url(ID) ->
-    gen_server:call(?MODULE, {open_or_create_doc, ID, url}).
+    gen_server:call(?MODULE, {open_or_create_doc, ID, url}, infinity).
+open_or_create_doc(ID, DocType) ->
+    gen_server:call(?MODULE, {open_or_create_doc, ID, DocType}, infinity).
+open_url_doc_by_url(Url) ->
+    gen_server:call(?MODULE, {open_url_doc_by_url, Url}, infinity).
+open_or_create_site(ID) ->
+    SiteID = ebot_db_doc_site:site_id_for_url(ID),
+    gen_server:call(?MODULE, {open_or_create_doc, SiteID, site, <<"sites">>}, infinity). % bucket name -> config
+open_doc_url_by_content_md5(Url, Digest, PassNumber) ->
+    gen_server:call(?MODULE, {open_doc_url_by_content_md5, Url, Digest, PassNumber}, infinity).
+delete_passed_urls(Site, Pass) ->
+    gen_server:call(?MODULE, {delete_passed_urls, Site, Pass}, infinity).
+mark_urls_as_unindexed(SiteID) ->
+    gen_server:cast(?MODULE, {mark_urls_as_unindexed, SiteID}).
+
 statistics() ->
     gen_server:call(?MODULE, {statistics}).
+
 update_doc(ID, Options) ->
-    gen_server:call(?MODULE, {update_doc, ID, Options}).
+    gen_server:call(?MODULE, {update_doc, ID, Options}, infinity).
+
+save_site_doc(ID, Doc) ->
+    gen_server:call(?MODULE, {save_doc, ID, Doc, site}, infinity).
+
 url_status(ID, Days) ->
     gen_server:call(?MODULE, {url_status, ID, Days}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -160,7 +180,13 @@ handle_call({open_doc, ID}, _From, State) ->
     {reply, Reply, State};
 handle_call({open_or_create_doc, ID, DocType}, _From, State) ->
     Reply = ebot_db_util:open_or_create_doc(State#state.db, ID, DocType),
-    {reply, Reply, State};		 
+    {reply, Reply, State};
+handle_call({open_url_doc_by_url, Url}, _From, State) ->
+    Reply = ebot_db_util:open_url_doc_by_url(State#state.db, Url),
+    {reply, Reply, State};
+handle_call({open_or_create_doc, ID, DocType, Bucket}, _From, State) ->
+    Reply = ebot_db_util:open_or_create_doc(State#state.db, ID, DocType, Bucket),
+    {reply, Reply, State};
 handle_call({url_status, ID, Days}, _From, State) ->
     Reply = ebot_db_doc_url:url_status(State#state.db, ID, Days),
     {reply, Reply, State};
@@ -171,6 +197,18 @@ handle_call({statistics}, _From, State) ->
 
 handle_call({update_doc, ID, Options}, _From, State) ->
     Reply = ebot_db_util:update_doc(State#state.db, ID, Options),
+    {reply, Reply, State};
+
+handle_call({save_doc, ID, Doc, site}, _From, State) ->
+    Reply = ebot_db_util:save_doc(State#state.db, ID, Doc, <<"sites">>),
+    {reply, Reply, State};
+
+handle_call({open_doc_url_by_content_md5, Url, Digest, PassNumber}, _From, State) ->
+    Reply = ebot_db_util:open_doc_url_by_content_md5(State#state.db, Url, Digest, PassNumber),
+    {reply, Reply, State};
+
+handle_call({delete_passed_urls, Site, Pass}, _From, State) ->
+    Reply = ebot_db_util:delete_passed_urls(State#state.db, Site, Pass),
     {reply, Reply, State};
 
 handle_call(_Request, _From, State) ->
@@ -186,6 +224,11 @@ handle_call(_Request, _From, State) ->
 handle_cast({delete_all_docs}, State) ->
     ?EBOT_DB_BACKEND:delete_all_docs(State#state.db),
     {noreply, State};
+
+handle_cast({mark_urls_as_unindexed, SiteID}, State) ->
+    ebot_db_util:mark_urls_as_unindexed(State#state.db, SiteID),
+    {noreply, State};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 

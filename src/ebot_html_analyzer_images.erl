@@ -25,7 +25,7 @@
 -module(ebot_html_analyzer_images).
 
 %% API
--export([add_images_list/2]).
+-export([add_images_list/3]).
 
 %%====================================================================
 %% API
@@ -33,7 +33,7 @@
 %%--------------------------------------------------------------------
 %%--------------------------------------------------------------------
 
-add_images_list(Url, Tokens) ->
+add_images_list(Url, Tokens, _Body) ->
     %% List = ebot_html_util:get_images_from_tokens(Tokens, Url),
     %% TODO
     List = [],

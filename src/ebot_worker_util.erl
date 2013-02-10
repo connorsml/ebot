@@ -28,13 +28,15 @@
 
 %% API
 -export([
-	 check_recover_workers/1,
+	 % check_recover_workers/1,
 	 create_workers/1,
 	 remove_worker/2,
 	 start_worker/2,
 	 start_workers/3,
 	 start_workers/2,
-	 statistics/1
+	 statistics/1,
+   worker_module/1,
+   restart_worker/2
 	]).
 
 %%====================================================================
@@ -45,24 +47,24 @@
 %% Description:
 %%--------------------------------------------------------------------
 
-check_recover_workers({Type, Workers}) ->
-    NewWorkers = lists:map( 
-		   fun({Depth, Pid}) ->
-			   case erlang:is_process_alive(Pid) of
-			       true ->
-				   error_logger:info_report({?MODULE, ?LINE, 
-							     {check_recover_worker, status,
-							      proplists:get_value(status, process_info(Pid)) }}),
-				   {Depth, Pid};
-			       false ->
-				   error_logger:warning_report({?MODULE, ?LINE, 
-								{check_recover_workers, recovering_dead_worker}}),
-				   NewPid = spawn_worker(Depth, Type),
-				   {Depth, NewPid}
-			   end
-		   end,
-		   Workers),
-    {Type, NewWorkers}.
+% check_recover_workers({Type, Workers}) ->
+%     NewWorkers = lists:map( 
+% 		   fun({Depth, Pid}) ->
+% 			   case erlang:is_process_alive(Pid) of
+% 			       true ->
+% 				   error_logger:info_report({?MODULE, ?LINE, 
+% 							     {check_recover_worker, status,
+% 							      proplists:get_value(status, process_info(Pid)) }}),
+% 				   {Depth, Pid};
+% 			       false ->
+% 				   error_logger:warning_report({?MODULE, ?LINE, 
+% 								{check_recover_workers, recovering_dead_worker}}),
+% 				   NewPid = spawn_worker(Depth, Type),
+% 				   {Depth, NewPid}
+% 			   end
+% 		   end,
+% 		   Workers),
+%     {Type, NewWorkers}.
 
 create_workers(Type) ->
     {Type, []}.
@@ -72,7 +74,7 @@ remove_worker({Depth, Pid}, {Type,Workers}) ->
 
 start_workers(Depth, Total, {Type,Workers}) -> 
     lists:foldl(
-      fun(_, {T,W}) -> start_worker(Depth, {T,W}) end,
+      fun(Num, {T,W}) -> start_worker(Depth, {T,W, Num}) end,
       {Type, Workers},
       lists:seq(1,Total)
      ).
@@ -98,8 +100,12 @@ statistics({Type,Workers}) ->
 %% Internal functions
 %%====================================================================
 
-add_worker({Depth, Pid}, {Type,Workers}) ->
-    {Type, [{Depth, Pid}|Workers]}.
+add_worker({Depth, Num, Pid}, {Type,Workers}) ->
+    Workers1 = case lists:filter(fun({_Depth1, _Num1, Pid1})-> Pid1 == Pid end, Workers) of
+       [] -> [{Depth, Num, Pid}|Workers];
+       {value, _} -> Workers
+    end,
+    {Type, Workers1}.
     
 filter_workers_by_depth(Depth, {Type, Workers}) ->
     NewWorkers = lists:filter(
@@ -107,31 +113,46 @@ filter_workers_by_depth(Depth, {Type, Workers}) ->
 		   Workers),
     {Type, NewWorkers}.
 
-spawn_worker(Depth, Type) ->
-    spawn(worker_module(Type), ?WORKER_START_FUNCTION, [Depth]).
+spawn_worker(Depth, Type, Num) ->
+    spawn_link(worker_module(Type), ?WORKER_START_FUNCTION, [{Depth, Num}]).
 
-start_worker(Depth, {Type, Workers}) ->
-    Pid = spawn_worker(Depth, Type),
-    add_worker({Depth, Pid}, {Type,Workers}).
+start_worker(Depth, {Type, Workers, Num}) ->
+    Pid = spawn_worker(Depth, Type, Num),
+    add_worker({Depth, Num, Pid}, {Type,Workers}).
+
+restart_worker(WPid, {Type, Workers}) ->
+    Workers1 = lists:foldl(fun({Depth, Num, Pid}, Acc)-> 
+                  if 
+                    Pid == WPid -> 
+                       NewPid = spawn_worker(Depth, Type, Num),
+                       error_logger:info_report({?MODULE, ?LINE, {replacing_worker, Pid, depth, Depth, num, Num, with, NewPid}}),
+                       [ {Depth, Num, NewPid} | Acc ];
+                    true ->  [{Depth, Num, Pid} | Acc]
+                   end
+                end, 
+                [], 
+                Workers),
+    {Type, Workers1}.
 
 worker_module(Type) ->
     list_to_atom("ebot_" ++ atom_to_list(Type)).
+
 
 %%====================================================================
 %% EUNIT TESTS
 %%====================================================================
 
--include_lib("eunit/include/eunit.hrl").
+% -include_lib("eunit/include/eunit.hrl").
 
--ifdef(TEST).
+% -ifdef(TEST).
 
-ebot_worker_test() ->
-    {web, Workers} = create_workers(web),
+% ebot_worker_test() ->
+%     {web, Workers} = create_workers(web),
 
-    ?assertEqual( [], Workers),
-    {web, Workers2} = add_worker({0,pid1}, {web,Workers}),
-    ?assertEqual( [{0,pid1}], Workers2 ),
-    ?assertEqual( {web,[{0,pid1}]}, filter_workers_by_depth(0, {web,Workers2})),
-    ?assertEqual( {web,[]}, filter_workers_by_depth(1, {web,Workers2})),
-    ?assertEqual(ebot_web, worker_module(web)).  
--endif.
+%     ?assertEqual( [], Workers),
+%     {web, Workers2} = add_worker({0,pid1}, {web,Workers}),
+%     ?assertEqual( [{0,pid1}], Workers2 ),
+%     ?assertEqual( {web,[{0,pid1}]}, filter_workers_by_depth(0, {web,Workers2})),
+%     ?assertEqual( {web,[]}, filter_workers_by_depth(1, {web,Workers2})),
+%     ?assertEqual(ebot_web, worker_module(web)).  
+% -endif.

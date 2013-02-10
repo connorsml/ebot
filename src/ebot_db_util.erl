@@ -38,8 +38,14 @@
 	 open_doc/2,
 	 open_or_create_db/0,
 	 open_or_create_doc/3,
+	 open_or_create_doc/4,
 	 save_doc/3,
-	 update_doc/3
+	 save_doc/4,
+	 update_doc/3,
+	 open_doc_url_by_content_md5/4,
+	 open_url_doc_by_url/2,
+	 delete_passed_urls/3,
+   mark_urls_as_unindexed/2
 	]).
 
 %%====================================================================
@@ -58,11 +64,21 @@ create_doc(Db, ID, DocType) ->
     {ok, Doc} = ebot_db_doc:create_doc(ID, DocType),
     save_doc(Db, ID, Doc).
 
+
+create_doc(Db, ID, DocType, Bucket) when is_atom(ID) ->
+    create_doc(Db, list_to_binary(atom_to_list(ID)), DocType, Bucket);
+create_doc(Db, ID, DocType, Bucket) when is_list(ID) ->
+    create_doc(Db, list_to_binary(ID), DocType, Bucket);
+create_doc(Db, ID, DocType, Bucket) ->
+    {ok, Doc} = ebot_db_doc:create_doc(ID, DocType),
+    save_doc(Db, ID, Doc, Bucket).
+
 delete_doc(Db, ID) ->
     ?EBOT_DB_BACKEND:delete_doc(Db, ID).
 
 list_docs(Db) ->
     ?EBOT_DB_BACKEND:list_docs(Db).
+
 
 open_doc(Db, ID) when is_atom(ID) ->
     open_doc(Db, list_to_binary(atom_to_list(ID)));
@@ -70,6 +86,14 @@ open_doc(Db, ID) when is_list(ID) ->
     open_doc(Db, list_to_binary(ID));
 open_doc(Db, ID) ->
     ?EBOT_DB_BACKEND:open_doc(Db, ID).
+
+% Explicitly set bucket name.
+open_doc(Db, ID, Bucket) when is_atom(ID) ->
+    open_doc(Db, list_to_binary(atom_to_list(ID)), Bucket);
+open_doc(Db, ID, Bucket) when is_list(ID) ->
+    open_doc(Db, list_to_binary(ID), Bucket);
+open_doc(Db, ID, Bucket) ->
+    ?EBOT_DB_BACKEND:open_doc(Db, ID, Bucket). % couch db will fail in the case.
 
 
 open_or_create_db() ->
@@ -91,6 +115,13 @@ open_or_create_db() ->
 	    end;
 	ebot_db_backend_riak_pb ->
 	    riakc_pb_socket:start_link(Hostname, Port);
+	ebot_db_backend_mongo ->
+	    ?EBOT_DB_BACKEND:open_or_create_db(Hostname, Port);
+	ebot_db_backend_postgresql ->
+    	{ok, Login} = ebot_util:get_env(db_login),
+    	{ok, Pwd} = ebot_util:get_env(db_password),
+    	{ok, DBName} = ebot_util:get_env(db_name),
+	    ?EBOT_DB_BACKEND:open_or_create_db({host, Hostname, db, DBName, login, Login, password, Pwd});
 	_Else ->
 	    error_logger:error_report({?MODULE, ?LINE, {init, unsupported_backend, ?EBOT_DB_BACKEND}}),
 	    {error, unsupported_backend}
@@ -98,12 +129,51 @@ open_or_create_db() ->
 
 open_or_create_doc(Db, ID, DocType) ->
     case open_doc(Db, ID) of
-	{error, not_found} ->
-	    error_logger:warning_report({?MODULE, ?LINE, {open_or_create_doc, ID, doesnt_exist, will_be_created}}),
-	    create_doc(Db, ID, DocType);
-	{ok, Doc} ->
-	    {ok, Doc}
+      {ok, Doc} ->
+          {ok, Doc};
+      {error, not_found} ->
+          error_logger:warning_report({?MODULE, ?LINE, {open_or_create_doc, ID, doesnt_exist, will_be_created}}),
+          create_doc(Db, ID, DocType);
+      {error, Reason} -> 
+          {error, Reason}
     end.
+
+open_or_create_doc(Db, ID, DocType, Bucket) ->
+    case open_doc(Db, ID, Bucket) of
+      {ok, Doc} ->
+          {ok, Doc};
+    	{error, not_found} ->
+    	    error_logger:warning_report({?MODULE, ?LINE, {open_or_create_doc, ID, doesnt_exist, will_be_created}}),
+    	    create_doc(Db, ID, DocType, Bucket);
+      {error, Reason} -> 
+          {error, Reason}
+    end.
+
+open_doc_url_by_content_md5(Db, Url, Digest, PassNumber) ->
+   Domain = ebot_url_util:url_domain(Url),
+
+   %TODO: rewrite catch properly with case catch .... of
+   try
+   	  ?EBOT_DB_BACKEND:open_doc_url_by_content_md5(Db, Domain, Digest, PassNumber)
+   of
+      Doc ->
+        Doc
+    catch
+      error:undef ->
+        {error, not_supported}
+   end.
+
+
+open_url_doc_by_url(Db, Url) ->
+   try
+   	  ?EBOT_DB_BACKEND:open_doc_url_by_url(Db, Url)
+   of
+      Doc ->
+        Doc
+    catch
+      error:undef ->
+        {error, not_supported}
+   end.
 
 save_doc(Db, ID, Doc) when is_list(ID) ->
     save_doc(Db, list_to_binary(ID), Doc);
@@ -111,14 +181,40 @@ save_doc(Db, ID, Doc) ->
     ?EBOT_DB_BACKEND:save_doc(Db, ID, Doc),
     {ok, Doc}.
 
+save_doc(Db, ID, Doc, Bucket) when is_list(ID) ->
+    save_doc(Db, list_to_binary(ID), Doc, Bucket);
+save_doc(Db, ID, Doc, Bucket) ->
+    ?EBOT_DB_BACKEND:save_doc(Db, Bucket, ID, Doc),
+    {ok, Doc}.
+
+
+
 update_doc(Db, ID, Options) ->
-    case open_doc(Db, ID) of
+  case open_doc(Db, ID) of
 	{ok, Doc} ->
 	    {ok, Doc2} = ebot_db_doc:update_doc(Doc, Options),
 	    save_doc(Db, ID, Doc2);
 	{error,Reason} ->
 	    {error,Reason}
     end.
+
+delete_passed_urls(Db, Site, Pass) ->
+   error_logger:info_report({?MODULE, ?LINE, {delete_passed_urls, Site, Pass}}),  
+   try
+   	  Domain = ebot_url_util:url_domain(Site),
+   	  ?EBOT_DB_BACKEND:delete_passed_urls(Db, Domain, Pass)
+   of
+      Result ->
+        Result
+    catch
+      error:undef ->
+        {error, not_supported}
+   end.
+
+mark_urls_as_unindexed(Db, Site) ->
+  % TODO case try...
+  Domain = ebot_url_util:url_domain(Site),
+  ?EBOT_DB_BACKEND:mark_urls_as_unindexed(Db, Domain).
 
 
 %%====================================================================

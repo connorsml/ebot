@@ -25,13 +25,13 @@
 -module(ebot_html_analyzer_header).
 
 %% API
--export([add_header_tags/2]).
+-export([add_header_tags/3]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
-add_header_tags(Url, Tokens) ->
+add_header_tags(Url, Tokens, _Body) ->
     L1 = analyze_html_tag(Url, Tokens, <<"title">>),
     L2 = analyze_html_tag(Url, Tokens, <<"meta">>),
     lists:flatten( [L1, L2]).
@@ -64,7 +64,8 @@ analyze_html_meta_attributes(Url, Tokens) ->
     analyze_meta_attributes(Url, Attributes).
 
 analyze_meta_attributes(_Url, []) ->
-    [{update_value, <<"keywords">>, <<>>},{update_value, <<"description">>, <<>>}];
+    % [{update_value, <<"keywords">>, <<>>},{update_value, <<"description">>, <<>>}];
+    [];
 analyze_meta_attributes(_Url, Attributes) ->
     lists:foldl(
       fun(Attribute, Results) ->

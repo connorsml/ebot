@@ -36,6 +36,8 @@
 		   ]).
 -define(EBOT_URL_KEY_PREFIX, <<"ebot.url.">>).
 -define(TIMEOUT, 10000).
+% -define(METHOD_CALL_TIMEOUT, 1000 * 60 * 10).
+-define(METHOD_CALL_TIMEOUT, infinity).
 
 -behaviour(gen_server).
 
@@ -51,6 +53,8 @@
 	 send_url_new/1,
 	 send_url_processed/1,
 	 send_url_refused/1,
+   send_input_url/1,
+   receive_input_url/0,
 	 statistics/0
 	]).
 
@@ -74,9 +78,11 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 receive_url_fetched(Depth) ->
-    gen_server:call(?MODULE, {receive_url, <<"fetched">>, Depth}).
+    gen_server:call(?MODULE, {receive_url, <<"fetched">>, Depth}, ?METHOD_CALL_TIMEOUT).
 receive_url_new(Depth) ->
-    gen_server:call(?MODULE, {receive_url, <<"new">>, Depth}).
+    gen_server:call(?MODULE, {receive_url, <<"new">>, Depth}, ?METHOD_CALL_TIMEOUT).
+receive_input_url() ->
+    gen_server:call(?MODULE, {receive_input_url}).
 send_url_fetched(Payload) ->
     gen_server:cast(?MODULE, {send_url, <<"fetched">>, Payload}).
 send_url_new(Payload) ->
@@ -85,6 +91,9 @@ send_url_processed(Payload) ->
     gen_server:cast(?MODULE, {send_url, <<"processed">>, Payload}).
 send_url_refused(Payload) ->
     gen_server:cast(?MODULE, {send_url, <<"refused">>, Payload}).
+send_input_url(Url) ->
+   gen_server:cast(?MODULE, {send_input_url, Url}).
+
 statistics() ->
     gen_server:call(?MODULE, {statistics}).
 
@@ -110,21 +119,25 @@ init([]) ->
       channel_max =  proplists:get_value(channel_max, Params)
      },
     case ampq_connect_and_get_channel(AMQParams, Durable) of
-	{ok, {Connection, Channel}} ->
-	    {ok, TotQueues} = ebot_util:get_env(mq_priority_url_queues),
-	    lists:foreach(
-	      fun(Key) ->
-		      amqp_setup_url_consumers(Channel, Key, TotQueues, Durable)
-	      end,
-	      ?EBOT_URL_KEYS),
-	    {ok, #state{
-	       channel = Channel,
-	       connection = Connection
-	      }
-	    };
-	_Else ->
-	    {error, amqp_cannot_connect_or_get_channel}
-	    %% TODO stopping the application or wait 60 sec and run again init
+    	{ok, {Connection, Channel}} ->
+    	    {ok, TotQueues} = ebot_util:get_env(mq_priority_url_queues),
+    	    lists:foreach(
+    	      fun(Key) ->
+    		      amqp_setup_url_consumers(Channel, Key, TotQueues, Durable)
+    	      end,
+    	      ?EBOT_URL_KEYS),
+
+           InputUrlsQueueKey = get_input_urls_queue_name(),
+           amqp_setup_consumer(Channel, InputUrlsQueueKey, ?EBOT_EXCHANGE, InputUrlsQueueKey, true),
+
+    	    {ok, #state{
+    	       channel = Channel,
+    	       connection = Connection
+    	      }
+    	    };
+    	_Else ->
+    	    {error, amqp_cannot_connect_or_get_channel}
+    	    %% TODO stopping the application or wait 60 sec and run again init
     end.
 
 %%--------------------------------------------------------------------
@@ -152,9 +165,14 @@ handle_call({statistics}, _From, State) ->
 	      ?EBOT_URL_KEYS),
     {reply, Reply, State};
 
+
+handle_call({receive_input_url}, _From, State) ->
+  Reply = amqp_receive_input_url(State),
+  {reply, Reply, State};
+
+
 handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+  {reply, ok, State}.
 
 %%--------------------------------------------------------------------
 %% Function: handle_cast(Msg, State) -> {noreply, State} |
@@ -163,8 +181,17 @@ handle_call(_Request, _From, State) ->
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
 handle_cast({send_url, Key, Payload}, State) ->
-    amqp_send_url(Key, Payload, State),
-    {noreply, State};
+  if 
+    (Key == <<"new">>) or (Key == <<"fetched">>) -> amqp_send_url(Key, Payload, State);
+    true -> empty
+  end,
+  ebot_event_manager:sync_notify({url_action, Key, Payload}),
+  {noreply, State};
+
+handle_cast({send_input_url, Url}, State) ->
+  amqp_send_input_url(Url, State),
+  {noreply, State};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -224,7 +251,10 @@ amqp_basic_get_message(Channel, Queue) ->
 	 {#'basic.get_ok'{}, Content} ->
 	     #amqp_msg{payload = Payload} = Content,
 %	     {Url, _} = Payload,
-	     error_logger:info_report({?MODULE, ?LINE, {get_url, from_queue, Queue}}),
+       if Queue =/= <<"ebot.url.input">> ->
+	       error_logger:info_report({?MODULE, ?LINE, {get_url, from_queue, Queue}});
+         true -> pass
+        end,
 	     {ok, payload_decode(Payload)};
 	 Else ->
 	     {error, Else}
@@ -235,11 +265,20 @@ amqp_receive_url(Key, Depth, State) ->
     Queue = get_url_queue_name(Key, Depth),
     amqp_basic_get_message(Channel, Queue).
 
+amqp_receive_input_url(State) ->
+    Channel =  State#state.channel,
+    Queue = get_input_urls_queue_name(),
+    amqp_basic_get_message(Channel, Queue).
+
 amqp_send_url(Key, Payload = {Url, _}, State) ->
     {ok, {Module, Function}} = ebot_util:get_env(mq_url_priority_plugin),
     Depth = Module:Function(Url),
     RoutingKey = get_url_queue_name(Key, Depth),
     amqp_send_message(RoutingKey, Payload, State).
+
+amqp_send_input_url(Url, State) ->
+    RoutingKey = get_input_urls_queue_name(),
+    amqp_send_message(RoutingKey, Url, State).
 
 amqp_send_message(RoutingKey, Payload = {Url,_}, State) ->
     Channel =  State#state.channel,
@@ -262,7 +301,11 @@ amqp_send_message(RoutingKey, Payload = {Url,_}, State) ->
     end,
     case Result = amqp_channel:cast(Channel, BasicPublish, _MsgPayload = Msg) of
 	ok ->
-	    error_logger:info_report({?MODULE, ?LINE, {send_url, RoutingKey, Url}});
+      if 
+        RoutingKey =/= <<"ebot.url.input">> ->
+	        error_logger:info_report({?MODULE, ?LINE, {send_url, RoutingKey, Url}});
+        true -> pass
+      end;
 	else ->
 	    error_logger:error_report({?MODULE, ?LINE, {cannot_send_url, RoutingKey, Url}})
     end,
@@ -305,8 +348,11 @@ amqp_setup_consumer(Channel, Q, X, Key, Durable) ->
 
 
 get_url_queue_name(Key, Depth) ->
-    BinDepth = list_to_binary("." ++ integer_to_list(Depth)),
-    <<?EBOT_URL_KEY_PREFIX/binary,Key/binary,BinDepth/binary>>.
+  BinDepth = list_to_binary("." ++ integer_to_list(Depth)),
+  <<?EBOT_URL_KEY_PREFIX/binary,Key/binary,BinDepth/binary>>.
+
+get_input_urls_queue_name() ->
+   <<?EBOT_URL_KEY_PREFIX/binary,<<"input">>/binary>>.
 
 statistics_by_key(Channel, Key, TotQueues) ->
     lists:map(

@@ -9,11 +9,13 @@
     ebot_sup,
     ebot_deps,
     ebot_resource,
-
     ebot_crawler,
     ebot_db,
     ebot_db_backend_riak_pb,
     ebot_db_backend_couchdb,
+    ebot_db_backend_mongo,
+    ebot_db_backend_postgresql,
+    
     ebot_db_util,
     ebot_html,
     ebot_html_util,
@@ -22,8 +24,19 @@
     ebot_url_util,
     ebot_util,
     ebot_web,
+	  ebot_web_mgmt_default_strategy,
+	  ebot_web_mgmt_per_site_strategy,
     ebot_web_util,
-    ebot_worker_util
+    ebot_worker_util,
+    ebot_robots_support,
+    ebot_event_manager,
+    ebot_events_guard,
+    ebot_url_action_manager,
+    ebot_urls_buffer_manager,
+    ebot_elastic_search_indexer,
+    ebot_indexer_manager,
+    ebot_request_logger
+
   ]},
   {registered, []},
   {mod, {ebot_app, []}},
@@ -43,9 +56,9 @@
 	 %% ---------------------------------------------------------
 	 %% Remember also to set DB_BACKEND_MODULE in src/ebot.hrl
 
-	 {db_hostname, "127.0.0.1"},
-	 %% {db_port, 5984}, %% CouchDB
-	 {db_port, 8087}, %% Riak
+	 %{db_hostname, "127.0.0.1"},
+	 %{db_port, 5984}, %% CouchDB
+	 %{db_port, 8087}, %% Riak
 
 	 %% ---------------------------------------------------------
 	 %% MQ

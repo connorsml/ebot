@@ -33,10 +33,10 @@
 	 add_new_url/1,
 	 add_visited_url/1,
 	 info/0,
-	 is_new_url/1,
-	 is_visited_url/1,
-	 show_new_urls/0,
-	 show_visited_urls/0,
+	 % is_new_url/1,
+	 % is_visited_url/1,
+	 % show_new_urls/0,
+	 % show_visited_urls/0,
 	 start_link/0,
 	 start_workers/0,
 	 stop_workers/0,
@@ -49,9 +49,10 @@
 	 terminate/2, code_change/3]).
 
 -record(state, {
-	  new_urls = queue:new(),
+	  % new_urls = queue:new(),
 	  new_urls_counter = 0,
-	  visited_urls = queue:new(),
+	  % visited_urls = queue:new(),
+    % sites,
 	  visited_urls_counter = 0,
 	  workers_status = started
 	 }).
@@ -70,16 +71,17 @@ add_new_url(Url) ->
     gen_server:cast(?MODULE, {add_new_url, Url}).
 add_visited_url(Url) ->
     gen_server:cast(?MODULE, {add_visited_url, Url}).
-is_new_url(Url) ->
-    gen_server:call(?MODULE, {is_new_url, Url}).
-is_visited_url(Url) ->
-    gen_server:call(?MODULE, {is_visited_url, Url}).
+
+% is_new_url(Url) ->
+%     gen_server:call(?MODULE, {is_new_url, Url}).
+% is_visited_url(Url) ->
+%     gen_server:call(?MODULE, {is_visited_url, Url}).
 info() ->
     gen_server:call(?MODULE, {info}).
-show_new_urls() ->
-    gen_server:call(?MODULE, {show_new_urls}).
-show_visited_urls() ->
-    gen_server:call(?MODULE, {show_visited_urls}).
+% show_new_urls() ->
+%     gen_server:call(?MODULE, {show_new_urls}).
+% show_visited_urls() ->
+%     gen_server:call(?MODULE, {show_visited_urls}).
 start_workers() ->
     gen_server:call(?MODULE, {start_workers}).
 stop_workers() ->
@@ -103,15 +105,15 @@ workers_status() ->
 init([]) ->
     %% setup queues
 
-    {ok, NewQueueSize} = ebot_util:get_env(cache_new_urls_queue_size),
-    {ok, VisitedQueueSize} = ebot_util:get_env(cache_visited_urls_queue_size),
+    % {ok, NewQueueSize} = ebot_util:get_env(cache_new_urls_queue_size),
+    % {ok, VisitedQueueSize} = ebot_util:get_env(cache_visited_urls_queue_size),
 
     %% filling queue with empty values: 
     %% in this way it is easier to check the max size of it:
     %% the queue is always full, everytime a new item is added,
     %% the oldest item is removed
-    NewUrls = ebot_util:create_filled_queue(<<>>, NewQueueSize),
-    VisitedUrls = ebot_util:create_filled_queue(<<>>, VisitedQueueSize),
+    % NewUrls = ebot_util:create_filled_queue(<<>>, NewQueueSize),
+    % VisitedUrls = ebot_util:create_filled_queue(<<>>, VisitedQueueSize),
 
     %% setup 
     case ebot_util:get_env(start_workers_at_boot) of
@@ -121,10 +123,10 @@ init([]) ->
 	    Crawlers_status = stopped
     end,
     State =  #state{
-      new_urls = NewUrls,
-      visited_urls = VisitedUrls,
+      % new_urls = NewUrls,
       workers_status = Crawlers_status
      },
+
     {ok, State}.
 
 %%--------------------------------------------------------------------
@@ -136,27 +138,35 @@ init([]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------;
-handle_call({is_new_url, Url}, _From, State) ->
-    Queue = State#state.new_urls,
-    Result = queue:member(Url, Queue),
-    {reply, Result, State};
+% handle_call({is_new_url, Url}, _From, State) ->
+%     Queue = State#state.new_urls,
+%     Result = queue:member(Url, Queue),
+%     {reply, Result, State};
 
-handle_call({is_visited_url, Url}, _From, State) ->
-    Queue = State#state.visited_urls,
-    Result = queue:member(Url, Queue),
-    {reply, Result, State};
+% handle_call({is_new_url, Url}, _From, State) ->
+%     Result = check_if_url_new(Url),
+%     {reply, Result, State};
+
+% handle_call({is_visited_url, Url}, _From, State) ->
+%     Sites = State#state.sites,
+%     Result = check_if_visited_url(Url, Sites),
+%     {reply, Result, State};
+    
+%     Queue = State#state.visited_urls,
+%     Result = queue:member(Url, Queue),
+%     {reply, Result, State};
 
 handle_call({info}, _From, State) ->
     Reply = ok,
     {reply, Reply, State};
 
-handle_call({show_new_urls}, _From, State) ->
-    Reply = show_queue(State#state.new_urls),
-    {reply, Reply, State};
+% handle_call({show_new_urls}, _From, State) ->
+%     Reply = show_queue(State#state.new_urls),
+%     {reply, Reply, State};
 
-handle_call({show_visited_urls}, _From, State) ->
-    Reply = show_queue(State#state.visited_urls),
-    {reply, Reply, State};
+% handle_call({show_visited_urls}, _From, State) ->
+%     Reply = show_queue(State#state.visited_urls),
+%     {reply, Reply, State};
 
 handle_call({statistics}, _From, State) ->
     %% TODO: queue:len is slow O(n), erlang doc suggestes to keep track 
@@ -195,34 +205,50 @@ handle_call(_Request, _From, State) ->
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
 handle_cast({add_new_url, Url}, State) ->
-    Queue =  State#state.new_urls,
-    case queue:member(Url, Queue) of
-	true  ->
-	    NewState = State;
-	false ->
-	    ebot_mq:send_url_new({Url,empty}),
-	    {{value, _Item}, NewQueue} = queue:out(Queue),
-	    NewState = State#state{
-			 new_urls = queue:in(Url, NewQueue),
-			 new_urls_counter = State#state.new_urls_counter + 1
-			}
-    end,
+    Url1 = ebot_url_util:add_final_slash_if_site_root(Url),
+    % The old strategy
+    % ebot_mq:send_url_new({Url1, empty}),
+    % NewState = State#state{
+    %    new_urls_counter = State#state.new_urls_counter + 1
+    %   },
+    
+    % A new one
+   ebot_urls_buffer_manager:add_new_url(Url1),
+   {noreply, State};
+
+ %    Queue =  State#state.new_urls,
+ %    case queue:member(Url, Queue) of
+	% true  ->
+	%     NewState = State;
+	% false ->
+	%     ebot_mq:send_url_new({Url,empty}),
+	%     {{value, _Item}, NewQueue} = queue:out(Queue),
+	%     NewState = State#state{
+	% 		 new_urls = queue:in(Url, NewQueue),
+	% 		 new_urls_counter = State#state.new_urls_counter + 1
+	% 		}
+    % end,
+    % {noreply, NewState};
+
+handle_cast({add_visited_url, _Url}, State) ->
+    NewState = State#state{
+           visited_urls_counter = State#state.visited_urls_counter + 1
+           },
+    % error_logger:info_report({?MODULE, ?LINE, add_visited_url, Url, NewState#state.sites}),
     {noreply, NewState};
 
-handle_cast({add_visited_url, Url}, State) ->
-    Queue =  State#state.visited_urls,
-    case queue:member(Url, Queue) of
-	true  ->
-	    NewState = State;
-	false ->
-	    {{value, _Item}, NewQueue} = queue:out(Queue),
-	    NewState = State#state{
-			 visited_urls = queue:in(Url, NewQueue),
-			 visited_urls_counter = State#state.visited_urls_counter + 1
-			}
-    end,
-    {noreply, NewState};
-
+%     Queue =  State#state.visited_urls,
+%     case queue:member(Url, Queue) of
+% 	true  ->
+% 	    NewState = State;
+% 	false ->
+% 	    {{value, _Item}, NewQueue} = queue:out(Queue),
+% 	    NewState = State#state{
+% 			 visited_urls = queue:in(Url, NewQueue),
+% 			 visited_urls_counter = State#state.visited_urls_counter + 1
+% 			}
+%     end,
+%     {noreply, NewState};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -263,3 +289,22 @@ show_queue(Q) ->
 	     queue:to_list( Q)
 	    ),
     string:join( List, ", ").
+
+%%--------------------------------------------------------------------
+%%% Urls site-base management
+%%--------------------------------------------------------------------
+
+% site_for_url(Url) ->
+%    Url1 = ebot_util:safe_binary_to_list(Url),
+%    %TODO: move the knowledge of constructing site url to a more apropriate place
+%    list_to_binary("http://"  ++ ebot_url_util:url_add_final_slash(ebot_url_util:url_domain(Url1))).
+
+% check_if_url_new(Url) ->
+%   Result = case ebot_db:open_url_doc_by_url(Url) of
+%     {ok, _Doc} ->
+%         false;
+%     {error,not_found} ->
+%         true
+%   end,
+%   error_logger:info_report({?MODULE, ?LINE, Url, is_new, Result}),
+%   Result.

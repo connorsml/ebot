@@ -1,0 +1,22 @@
+Installing on Ubuntu 11.10
+$ sudo apt-get install erlang
+$ sudo apt-get install rabbitmq-server
+$ wget http://downloads.basho.com/riak/riak-1.0.2/riak_1.0.2-1_amd64.deb
+$ sudo dpkg -i riak_1.0.2-1_amd64.deb
+
+
+Installing Erlang from source
+sudo apt-get install curl build-essential libncurses5-dev openssl libssl-dev fop xsltproc
+curl -O https://raw.github.com/spawngrid/kerl/master/kerl
+chmod a+x kerl
+./kerl build R14B03 r14b03
+sudo ./kerl install r14b03 /opt/erlang/r14b03
+. /opt/erlang/r14b03/activate
+
+Installing Riak from source
+sudo apt-get install build-essential libc6-dev-i386
+git clone https://github.com/basho/riak.git riak
+cd riak
+git checkout riak-1.0.2
+make all
+make devrel 
